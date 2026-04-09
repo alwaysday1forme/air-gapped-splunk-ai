@@ -1,3 +1,5 @@
+#this is for the search app /bin folder
+
 #!/usr/bin/env python3
 
 import sys
