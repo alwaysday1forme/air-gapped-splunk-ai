@@ -1,0 +1,4 @@
+| makeresults
+| eval prompt="User failed login from 192.168.1.50 multiple times"
+| ai_generate model=ollama_proxy prompt=prompt
+| table response
