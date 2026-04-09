@@ -1,0 +1,121 @@
+SPLUNK AI TOOLKIT + OLLAMA (OFFLINE SETUP)
+ARCHITECTURE
+
+Splunk AI Toolkit → Flask Proxy → Ollama (Laptop)
+REQUIREMENTS
+
+    Splunk Enterprise (NOT Free license)
+
+    AI Toolkit installed
+
+    Ollama running on laptop (port 11434)
+
+    Python3 + Flask + requests installed on Splunk server
+
+STEP 1 — OLLAMA (LAPTOP)
+
+Verify:
+
+curl http://localhost:11434/api/tags
+STEP 2 — PROXY (ON SPLUNK SERVER)
+
+Create file:
+
+/opt/splunk/etc/apps/Splunk_ML_Toolkit/ollama_proxy.py
+CONTENT
+
+from flask import Flask, request, jsonify
+import requests
+
+app = Flask(name)
+
+OLLAMA_URL = "http://192.168.1.37:11434/api/generate"
+
+@app.route("/")
+def home():
+return "Proxy is running"
+
+@app.route("/v1/chat/completions", methods=["POST"])
+def chat():
+data = request.json
+
+messages = data.get("messages", [])
+prompt = messages[-1]["content"] if messages else ""
+
+r = requests.post(OLLAMA_URL, json={
+    "model": "phi3:latest",
+    "prompt": prompt,
+    "stream": False,
+    "options": {
+        "num_predict": 200,
+        "temperature": 0.2
+    }
+})
+
+result = r.json()
+
+return jsonify({
+    "choices": [
+        {
+            "message": {
+                "content": result.get("response", "")
+            }
+        }
+    ]
+})
+
+app.run(host="127.0.0.1", port=5000)
+STEP 3 — INSTALL DEPENDENCIES
+
+pip3 install flask requests
+STEP 4 — RUN PROXY
+
+python3 ollama_proxy.py
+
+Verify:
+
+curl http://127.0.0.1:5000
+→ "Proxy is running"
+STEP 5 — VERIFY FULL FLOW
+
+curl http://127.0.0.1:5000/v1/chat/completions
+-H "Content-Type: application/json"
+-d '{"messages":[{"role":"user","content":"test"}]}'
+STEP 6 — AI TOOLKIT MODEL
+
+Go to:
+
+AI Toolkit → Models → Add Model
+
+Name: ollama_proxy
+Provider: OpenAI Compatible
+Endpoint: http://127.0.0.1:5000/v1/chat/completions
+Model: phi3
+STEP 7 — TEST IN SPLUNK
+
+| makeresults
+| eval prompt="User failed login from 192.168.1.50 multiple times"
+| ai_generate model=ollama_proxy prompt=prompt
+| table *
+IMPORTANT NOTES
+
+    DO NOT use Splunk Free license (AI Toolkit fails)
+
+    DO NOT use output_field (not supported in your version)
+
+    DO NOT modify Ollama container
+
+    Proxy must run on Splunk server (simplifies networking)
+
+CLEANUP (OLD METHOD)
+
+Optional: remove old lookup-based integration
+
+/opt/splunk/etc/apps/search/bin/ollama_lookup.py
+RESULT
+
+You now have:
+
+Splunk → AI Toolkit → Proxy → Ollama
+
+Fully offline LLM integration
