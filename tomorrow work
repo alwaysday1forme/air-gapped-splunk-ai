@@ -1,0 +1,272 @@
+# SPLUNK AI TOOLKIT + OLLAMA (GGUF, OFFLINE, PERSISTENT SETUP)
+
+---
+
+## 🧭 ARCHITECTURE
+
+Splunk Search Head
+↓
+ollama_proxy (systemd service on Splunk)
+↓
+Ollama VM (GGUF model, offline)
+
+---
+
+## 🧱 PART 1 — OLLAMA VM (GGUF MODEL SETUP)
+
+### STEP 1 — Install Ollama (on VM)
+
+# (Linux example)
+
+curl -fsSL https://ollama.com/install.sh | sh
+
+Verify:
+ollama --version
+
+---
+
+### STEP 2 — Add GGUF MODEL
+
+Place your GGUF file on the VM, for example:
+phi-3-mini.gguf
+
+---
+
+### STEP 3 — Create Modelfile
+
+nano Modelfile
+
+Contents:
+FROM ./phi-3-mini.gguf
+
+---
+
+### STEP 4 — Create Model
+
+ollama create phi3-local -f Modelfile
+
+---
+
+### STEP 5 — Run / Test Model
+
+ollama run phi3-local
+
+OR API test:
+curl http://localhost:11434/api/generate 
+-d '{
+"model": "phi3-local",
+"prompt": "test",
+"stream": false
+}'
+
+---
+
+### STEP 6 — Verify from Splunk Server
+
+curl http://<OLLAMA_VM_IP>:11434/api/tags
+
+Expected:
+"phi3-local"
+
+---
+
+## 🧱 PART 2 — PROXY (ON SPLUNK SERVER)
+
+### STEP 1 — Create Directory
+
+mkdir -p /opt/ollama-proxy
+
+---
+
+### STEP 2 — Create Proxy File
+
+nano /opt/ollama-proxy/ollama_proxy.py
+
+---
+
+### CONTENT
+
+from flask import Flask, request, jsonify
+import requests
+
+app = Flask(**name**)
+
+OLLAMA_URL = "http://<OLLAMA_VM_IP>:11434/api/generate"
+
+@app.route("/")
+def home():
+return "Proxy is running"
+
+@app.route("/v1/chat/completions", methods=["POST"])
+def chat():
+data = request.json
+
+```
+messages = data.get("messages", [])
+prompt = messages[-1]["content"] if messages else ""
+
+r = requests.post(OLLAMA_URL, json={
+    "model": "phi3-local",
+    "prompt": prompt,
+    "stream": False,
+    "options": {
+        "num_predict": 200,
+        "temperature": 0.2
+    }
+})
+
+result = r.json()
+
+return jsonify({
+    "choices": [
+        {
+            "message": {
+                "content": result.get("response", "")
+            }
+        }
+    ]
+})
+```
+
+app.run(host="127.0.0.1", port=5000)
+
+---
+
+### STEP 3 — Install Dependencies
+
+pip3 install flask requests
+
+---
+
+### STEP 4 — TEST PROXY
+
+python3 /opt/ollama-proxy/ollama_proxy.py
+
+Test:
+curl http://127.0.0.1:5000
+→ Proxy is running
+
+---
+
+### STEP 5 — TEST FULL FLOW
+
+curl http://127.0.0.1:5000/v1/chat/completions 
+-H "Content-Type: application/json" 
+-d '{"messages":[{"role":"user","content":"test"}]}'
+
+---
+
+## 🧱 PART 3 — MAKE PROXY PERSISTENT (SYSTEMD)
+
+### STEP 1 — CREATE SERVICE
+
+sudo nano /etc/systemd/system/ollama-proxy.service
+
+---
+
+### CONTENT
+
+[Unit]
+Description=Ollama Proxy Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/ollama-proxy/ollama_proxy.py
+WorkingDirectory=/opt/ollama-proxy
+Restart=always
+User=splunk
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+
+---
+
+### STEP 2 — ENABLE + START
+
+sudo systemctl daemon-reexec
+sudo systemctl daemon-reload
+
+sudo systemctl enable ollama-proxy
+sudo systemctl start ollama-proxy
+
+---
+
+### STEP 3 — VERIFY
+
+systemctl status ollama-proxy
+
+Logs:
+journalctl -u ollama-proxy -f
+
+---
+
+## 🧱 OPTIONAL — USE GUNICORN (BETTER THAN FLASK DEV)
+
+pip install gunicorn
+
+Update service:
+
+ExecStart=/usr/bin/gunicorn -w 2 -b 127.0.0.1:5000 ollama_proxy:app
+
+---
+
+## 🧱 PART 4 — SPLUNK AI TOOLKIT CONFIG
+
+### REQUIREMENT
+
+❗ Must NOT be in Free License mode
+Use Enterprise or Trial license
+
+---
+
+### STEP 1 — ADD MODEL
+
+In AI Toolkit UI:
+
+Name: ollama_proxy
+Provider: OpenAI Compatible
+Endpoint: http://127.0.0.1:5000/v1/chat/completions
+Model: phi3
+
+---
+
+### STEP 2 — TEST SEARCH
+
+| makeresults
+| eval prompt="User failed login from 192.168.1.50 multiple times"
+| ai_generate model=ollama_proxy prompt=prompt
+| table *
+
+---
+
+## ⚠️ IMPORTANT NOTES
+
+* Do NOT use output_field (unsupported)
+* Do NOT run in Free license (AI Toolkit fails)
+* Proxy MUST run on Splunk server
+* Ollama stays on separate VM
+* GGUF enables full offline operation
+
+---
+
+## 🧱 CLEANUP (OLD METHOD)
+
+Remove old lookup-based integration:
+
+/opt/splunk/etc/apps/search/bin/ollama_lookup.py
+
+---
+
+## 🎯 FINAL RESULT
+
+You now have:
+
+Splunk → AI Toolkit → Proxy → Ollama (GGUF)
+
+✔ Fully offline
+✔ Persistent
+✔ Enterprise-style architecture
+✔ Ready for RAG / future expansion
+
+---
