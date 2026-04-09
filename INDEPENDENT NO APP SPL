@@ -1,0 +1,53 @@
+index=*
+| search ("failed" OR "denied" OR "unauthorized" OR "invalid" OR "error" OR "refused" OR "forbidden")
+| stats count by _raw
+| sort -count
+| where count > 5
+| head 10
+
+| eval clean_log=replace(_raw, "\n", " ")
+| eval clean_log=substr(clean_log, 1, 300)
+
+| eval prompt="You are a SOC analyst.
+
+STRICT RULES:
+- Only classify as Security if clear malicious behavior exists
+- Application errors are NOT security issues
+- Do NOT assume exploitation
+- Be conservative
+
+Respond ONLY:
+
+TYPE:
+SEVERITY:
+REASON:
+ACTION:
+
+LOG: " . clean_log
+
+| lookup ollama_lookup prompt OUTPUTNEW ai_response
+
+
+| eval ai_response=substr(ai_response, 1, 400)
+
+
+| eval ai_response=replace(ai_response, "TYPE:", "TYPE:")
+| eval ai_response=replace(ai_response, "SEVERITY:", "SEVERITY:")
+| eval ai_response=replace(ai_response, "REASON:", "REASON:")
+| eval ai_response=replace(ai_response, "ACTION:", "ACTION:")
+
+| table count clean_log ai_response
+
+
+
+#test that i am independent
+| makeresults
+| eval prompt="Say hello in SOC format"
+| lookup ollama_lookup prompt OUTPUT ai_response
+| table ai_response
+
+
+#test the install of mltk
+| rest /services/apps/local
+| search title="*AI*" OR title="*Machine*"
+| table title version disabled
