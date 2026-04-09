@@ -1,0 +1,262 @@
+# DAY 2 RUNBOOK — SPLUNK AI TOOLKIT + OLLAMA
+
+---
+
+## 🧠 ENVIRONMENT
+
+Splunk Search Head: 192.168.1.80
+Ollama VM:           <OLLAMA_VM_IP>
+
+---
+
+# 🧱 PART 1 — VERIFY OLLAMA VM
+
+## 1. Confirm Ollama is running
+
+On Ollama VM:
+
+curl http://127.0.0.1:11434/api/tags
+
+---
+
+## 2. Confirm model exists
+
+Expected:
+
+"phi3:latest"
+
+---
+
+## 3. Test model
+
+curl http://127.0.0.1:11434/api/generate 
+-d '{
+"model": "phi3:latest",
+"prompt": "hello",
+"stream": false
+}'
+
+---
+
+## 4. Verify from Splunk server
+
+curl http://<OLLAMA_VM_IP>:11434/api/tags
+
+---
+
+# 🧱 PART 2 — INSTALL PROXY (FROM TARBALL)
+
+## 1. Pull from GitHub
+
+cd /opt
+git clone <your repo>
+cd ollama-proxy-bundle
+
+---
+
+## 2. Extract tarball
+
+tar -xzvf ollama_gunicorn.tar.gz
+
+---
+
+## 3. Install dependencies (OFFLINE)
+
+pip3 install --no-index --find-links=requirements flask requests gunicorn
+
+---
+
+## 4. Verify install
+
+python3 -c "import flask, requests"
+
+---
+
+# 🧱 PART 3 — CONFIGURE PROXY
+
+## 1. Edit proxy
+
+nano ollama_proxy.py
+
+---
+
+## 2. Set correct IP
+
+OLLAMA_URL = "http://<OLLAMA_VM_IP>:11434/api/generate"
+
+---
+
+## 3. Confirm model name
+
+"model": "phi3:latest"
+
+---
+
+# 🧱 PART 4 — TEST PROXY (FLASK MODE)
+
+## Run:
+
+python3 ollama_proxy.py
+
+---
+
+## Test:
+
+curl http://127.0.0.1:5000
+
+Expected:
+Proxy is running
+
+---
+
+## Full test:
+
+curl http://127.0.0.1:5000/v1/chat/completions 
+-H "Content-Type: application/json" 
+-d '{"messages":[{"role":"user","content":"test"}]}'
+
+---
+
+# 🧱 PART 5 — RUN PROXY (GUNICORN MODE)
+
+## Stop Flask if running
+
+CTRL+C
+
+---
+
+## Start Gunicorn
+
+gunicorn -w 2 -b 127.0.0.1:5000 ollama_proxy:app
+
+---
+
+## Test again
+
+curl http://127.0.0.1:5000
+
+---
+
+# 🧱 PART 6 — MAKE PERSISTENT (SYSTEMD)
+
+## Create service
+
+sudo nano /etc/systemd/system/ollama-proxy.service
+
+---
+
+## Paste:
+
+[Unit]
+Description=Ollama Proxy Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/gunicorn -w 2 -b 127.0.0.1:5000 ollama_proxy:app
+WorkingDirectory=/opt/ollama-proxy-bundle
+Restart=always
+User=splunk
+
+[Install]
+WantedBy=multi-user.target
+
+---
+
+## Enable + start
+
+sudo systemctl daemon-reload
+sudo systemctl enable ollama-proxy
+sudo systemctl start ollama-proxy
+
+---
+
+## Verify
+
+systemctl status ollama-proxy
+
+---
+
+# 🧱 PART 7 — SPLUNK (CRITICAL)
+
+## 1. ENABLE LICENSE
+
+Go to:
+
+Settings → Licensing → Enable Enterprise Trial
+
+---
+
+## 2. VERIFY AI COMMANDS
+
+| rest /services/search/commands
+| search title="ai*"
+
+---
+
+# 🧱 PART 8 — AI TOOLKIT MODEL
+
+Go to:
+
+AI Toolkit → Models → Add Model
+
+---
+
+## Fill:
+
+Name: ollama_proxy
+Provider: OpenAI Compatible
+Endpoint: http://127.0.0.1:5000/v1/chat/completions
+Model: phi3
+
+---
+
+# 🧪 PART 9 — FINAL TEST
+
+| makeresults
+| eval prompt="test"
+| ai_generate model=ollama_proxy prompt=prompt
+| table *
+
+---
+
+# 🧱 PART 10 — BACKUP METHOD (OPTIONAL)
+
+## Keep your working lookup pipeline
+
+/opt/splunk/etc/apps/search/bin/ollama_lookup.py
+
+---
+
+## This gives you:
+
+✔ AI Toolkit path
+✔ Lookup fallback
+
+---
+
+# 🧠 TROUBLESHOOTING
+
+## Empty response
+
+→ Check model name
+
+## Connection error
+
+→ Check IP + firewall
+
+## KeyError 'params'
+
+→ License still Free mode
+
+---
+
+# 🎯 FINAL RESULT
+
+Splunk → AI Toolkit → Gunicorn → Flask → Ollama
+
+✔ Fully offline
+✔ Persistent
+✔ Production-ready
+
+---
+

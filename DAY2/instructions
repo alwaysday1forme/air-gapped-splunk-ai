@@ -1,0 +1,250 @@
+index=*
+| search ("failed" OR "denied" OR "unauthorized" OR "invalid" OR "error" OR "refused" OR "forbidden")
+| stats count by _raw
+| sort -count
+| where count > 5
+| head 10
+
+| eval clean_log=replace(_raw, "\n", " ")
+| eval clean_log=substr(clean_log, 1, 300)
+
+| eval prompt="You are a SOC analyst.
+
+STRICT RULES:
+- Only classify as Security if clear malicious behavior exists
+- Application errors are NOT security issues
+- Do NOT assume exploitation
+- Be conservative
+
+Respond ONLY:
+
+TYPE:
+SEVERITY:
+REASON:
+ACTION:
+
+LOG: " . clean_log
+
+| lookup ollama_lookup prompt OUTPUTNEW ai_response
+
+
+| eval ai_response=substr(ai_response, 1, 400)
+
+
+| eval ai_response=replace(ai_response, "TYPE:", "TYPE:")
+| eval ai_response=replace(ai_response, "SEVERITY:", "SEVERITY:")
+| eval ai_response=replace(ai_response, "REASON:", "REASON:")
+| eval ai_response=replace(ai_response, "ACTION:", "ACTION:")
+
+| table count clean_log ai_response
+
+
+
+#test that i am independent
+| makeresults
+| eval prompt="Say hello in SOC format"
+| lookup ollama_lookup prompt OUTPUT ai_response
+| table ai_response
+
+
+#test the install of mltk
+| rest /services/apps/local
+| search title="*AI*" OR title="*Machine*"
+| table title version disabled
+
+
+
+
+#ollama_proxy.py
+from flask import Flask, request, jsonify
+import requests
+
+app = Flask(__name__)
+
+OLLAMA_URL = "http://localhost:11434/api/generate"
+
+@app.route("/v1/chat/completions", methods=["POST"])
+def chat():
+    data = request.json
+
+    # Extract prompt from OpenAI-style request
+    messages = data.get("messages", [])
+    prompt = messages[-1]["content"] if messages else ""
+
+    # Send to Ollama
+    r = requests.post(OLLAMA_URL, json={
+        "model": "phi3:latest",
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "num_predict": 200,
+            "temperature": 0.2
+        }
+    })
+
+    result = r.json()
+
+    # Convert to OpenAI-compatible response
+    return jsonify({
+        "choices": [
+            {
+                "message": {
+                    "content": result.get("response", "")
+                }
+            }
+        ]
+    })
+
+app.run(host="0.0.0.0", port=5000)
+
+
+
+
+
+mkdir -p /opt/ollama-proxy
+mv ollama_proxy.py /opt/ollama-proxy/
+
+#sudo nano /etc/systemd/system/ollama-proxy.service
+#FOR FLASK 
+
+[Unit]
+Description=Ollama Proxy Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/ollama-proxy/ollama_proxy.py
+WorkingDirectory=/opt/ollama-proxy
+Restart=always
+User=splunk
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+
+
+sudo systemctl daemon-reexec
+sudo systemctl daemon-reload
+
+sudo systemctl enable ollama-proxy
+sudo systemctl start ollama-proxy
+
+
+#HOW I GATHERED GUNICORN DEPENDENCIES
+mkdir ollama-proxy-bundle
+cd ollama-proxy-bundle
+mkdir requirements
+pip download flask requests gunicorn -d requirements
+
+
+#should look like
+ollama-proxy-bundle/
+├── ollama_proxy.py
+├── requirements/
+│   ├── flask-*.whl
+│   ├── requests-*.whl
+│   ├── gunicorn-*.whl
+│   ├── urllib3-*.whl
+│   ├── idna-*.whl
+│   ├── certifi-*.whl
+│   ├── charset_normalizer-*.whl
+│   └── click-*.whl
+
+
+
+
+
+#install gunicorn (because it works better than flask)
+tar -xzvf ollama-proxy-bundle.tar.gz
+cd ollama-proxy-bundle
+pip3 install --no-index --find-links=requirements flask requests gunicorn
+gunicorn -w 2 -b 127.0.0.1:5000 ollama_proxy:app
+
+
+#from splunk server
+curl http://<OLLAMA_VM_IP>:11434/api/generate \
+  -d '{
+    "model": "phi3-local",
+    "prompt": "test",
+    "stream": false
+  }'
+  
+#to verify
+curl http://<OLLAMA_VM_IP>:11434/api/tags
+
+
+
+#to restart
+pkill gunicorn
+gunicorn -w 2 -b 127.0.0.1:5000 ollama_proxy:app
+
+
+
+#FOR GUNICORN
+from flask import Flask, request, jsonify
+import requests
+
+app = Flask(__name__)
+
+OLLAMA_URL = "http://192.168.1.37:11434/api/generate"
+
+@app.route("/")
+def home():
+    return "Proxy is running"
+
+@app.route("/v1/chat/completions", methods=["POST"])
+def chat():
+    data = request.json
+
+    messages = data.get("messages", [])
+    prompt = messages[-1]["content"] if messages else ""
+
+    r = requests.post(OLLAMA_URL, json={
+        "model": "phi3-local",
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "num_predict": 200,
+            "temperature": 0.2
+        }
+    })
+
+    result = r.json()
+
+    return jsonify({
+        "choices": [
+            {
+                "message": {
+                    "content": result.get("response", "")
+                }
+            }
+        ]
+    })
+
+
+
+#nano /etc/systemd/system/ollama-proxy.service
+[Unit]
+Description=Ollama Proxy Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/gunicorn -w 2 -b 127.0.0.1:5000 ollama_proxy
+WorkingDirectory=/opt/ollama-proxy-bundle
+Restart=always
+User=splunk
+
+[Install]
+WantedBy=multi-user.target
+
+sudo systemctl daemon-reload
+sudo systemctl enable ollama-proxy
+sudo systemctl start ollama-proxy
+
+systemctl status ollama-proxy
+
+
+#test to see if working.
+| makeresults
+| eval prompt="test"
+| ai_generate model=ollama_proxy prompt=prompt
+| table *
